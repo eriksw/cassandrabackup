@@ -26,7 +26,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func (c *awsClient) putDocument(ctx context.Context, absoluteKey string, v easyjson.Marshaler) error {
+func (c *Client) putDocument(ctx context.Context, absoluteKey string, v easyjson.Marshaler) error {
 	var encodeBuffer bytes.Buffer
 	gzipWriter := gzip.NewWriter(&encodeBuffer)
 	if _, err := easyjson.MarshalToWriter(v, gzipWriter); err != nil {
@@ -37,7 +37,7 @@ func (c *awsClient) putDocument(ctx context.Context, absoluteKey string, v easyj
 	}
 
 	putObjectInput := &s3.PutObjectInput{
-		Bucket:               &c.keyStore.bucket,
+		Bucket:               &c.bucket,
 		Key:                  &absoluteKey,
 		ContentType:          aws.String("application/json"),
 		ContentEncoding:      aws.String("gzip"),
@@ -63,9 +63,9 @@ func (c *awsClient) putDocument(ctx context.Context, absoluteKey string, v easyj
 	}
 }
 
-func (c *awsClient) getDocument(ctx context.Context, absoluteKey string, v easyjson.Unmarshaler) error {
+func (c *Client) getDocument(ctx context.Context, absoluteKey string, v easyjson.Unmarshaler) error {
 	getObjectInput := &s3.GetObjectInput{
-		Bucket: &c.keyStore.bucket,
+		Bucket: &c.bucket,
 		Key:    &absoluteKey,
 	}
 	attempts := 0

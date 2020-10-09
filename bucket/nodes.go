@@ -23,17 +23,17 @@ import (
 	"go.uber.org/zap"
 )
 
-func (c *awsClient) ListHostNames(ctx context.Context, cluster string) ([]manifests.NodeIdentity, error) {
+func (c *Client) ListHostNames(ctx context.Context, cluster string) ([]manifests.NodeIdentity, error) {
 	lgr := zap.S()
-	prefix := c.keyStore.absoluteKeyPrefixForClusterHosts(cluster)
+	prefix := c.absoluteKeyPrefixForClusterHosts(cluster)
 	input := &s3.ListObjectsV2Input{
-		Bucket:    &c.keyStore.bucket,
+		Bucket:    &c.bucket,
 		Delimiter: aws.String("/"),
 		Prefix:    &prefix,
 	}
 	var result []manifests.NodeIdentity
 	err := c.s3Svc.ListObjectsV2PagesWithContext(ctx, input, func(page *s3.ListObjectsV2Output, lastPage bool) bool {
-		nodes, bonus := c.keyStore.decodeClusterHosts(page.CommonPrefixes)
+		nodes, bonus := c.decodeClusterHosts(page.CommonPrefixes)
 		if len(bonus) > 0 {
 			lgr.Warnw("unexpected_objects_in_bucket", "keys", bonus)
 		}
@@ -50,18 +50,18 @@ func (c *awsClient) ListHostNames(ctx context.Context, cluster string) ([]manife
 	return result, err
 }
 
-func (c *awsClient) ListClusters(ctx context.Context) ([]string, error) {
+func (c *Client) ListClusters(ctx context.Context) ([]string, error) {
 	lgr := zap.S()
-	prefix := c.keyStore.absoluteKeyPrefixForClusters()
+	prefix := c.absoluteKeyPrefixForClusters()
 	input := &s3.ListObjectsV2Input{
-		Bucket:    &c.keyStore.bucket,
+		Bucket:    &c.bucket,
 		Delimiter: aws.String("/"),
 		Prefix:    &prefix,
 	}
 	var result []string
 	err := c.s3Svc.ListObjectsV2PagesWithContext(ctx, input, func(page *s3.ListObjectsV2Output, lastPage bool) bool {
 		for _, obj := range page.CommonPrefixes {
-			cluster, err := c.keyStore.decodeCluster(*obj.Prefix)
+			cluster, err := c.decodeCluster(*obj.Prefix)
 			if err != nil {
 				lgr.Errorw("decode_cluster_error", "err", err)
 			} else {

@@ -18,7 +18,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"hash"
 	"io"
 
 	"github.com/retailnext/cassandrabackup/digest/parts"
@@ -26,66 +25,60 @@ import (
 	"golang.org/x/crypto/blake2b"
 )
 
-type ForUploadFactory interface {
-	CreateForUpload() ForUpload
+type ForUpload struct {
+	blake2b     blake2bDigest
+	partDigests parts.PartDigests
 }
 
-type awsForUploadFactory struct{}
-
-func (f *awsForUploadFactory) CreateForUpload() ForUpload {
-	return &awsForUpload{}
-}
-
-type ForUpload interface {
-	UnmarshalBinary(data []byte) error
-	MarshalBinary() ([]byte, error)
-	populate(ctx context.Context, file paranoid.File) error
-	onWrite(buf []byte, len int)
-	PartDigests() *parts.PartDigests
-	ForRestore() ForRestore
-}
-
-type awsForUpload struct {
-	blake2b          blake2bDigest
-	partDigestsMaker parts.PartDigestsMaker
-	partDigests      parts.PartDigests
-}
-
-func (u *awsForUpload) URLSafe() string {
+func (u *ForUpload) URLSafe() string {
 	return base64.RawURLEncoding.EncodeToString(u.blake2b[:])
 }
 
-func (u *awsForUpload) PartDigests() *parts.PartDigests {
-	return &u.partDigests
+func (u *ForUpload) Parts() int64 {
+	return u.partDigests.Parts()
 }
 
-func (u *awsForUpload) onWrite(buf []byte, len int) {
-	if n, err := u.partDigestsMaker.Write(buf[0:len]); err != nil {
-		panic(err)
-	} else if n != len {
-		panic(io.ErrShortWrite)
-	}
+func (u ForUpload) PartOffset(partNumber int64) int64 {
+	return u.partDigests.PartOffset(partNumber)
 }
 
-func (u *awsForUpload) ForRestore() ForRestore {
+func (u ForUpload) PartLength(partNumber int64) int64 {
+	return u.partDigests.PartLength(partNumber)
+}
+
+func (u ForUpload) ContentLength() int64 {
+	return int64(u.partDigests.TotalLength())
+}
+
+func (u ForUpload) PartContentMD5(partNumber int64) string {
+	return u.partDigests.PartContentMD5(partNumber)
+}
+
+func (u ForUpload) PartContentSHA256(partNumber int64) string {
+	return u.partDigests.PartContentSHA256(partNumber)
+}
+
+func (u *ForUpload) ForRestore() ForRestore {
 	return ForRestore{
 		blake2b: u.blake2b,
 	}
 }
 
 const checkContextBytesInterval = 1024 * 1024 * 8
-const partSize = 1024 * 1024 * 64
 
-func makeHash(ctx context.Context, file paranoid.File, u ForUpload) (hash.Hash, error) {
+func (u *ForUpload) populate(ctx context.Context, file paranoid.File) error {
 	osFile, err := file.Open()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer func() {
 		if closeErr := osFile.Close(); closeErr != nil {
 			panic(closeErr)
 		}
 	}()
+
+	var partDigestsMaker parts.PartDigestsMaker
+	partDigestsMaker.Reset(1024 * 1024 * 64)
 
 	blake2b512Hash, err := blake2b.New512(nil)
 	if err != nil {
@@ -99,10 +92,14 @@ func makeHash(ctx context.Context, file paranoid.File, u ForUpload) (hash.Hash, 
 	for {
 		bytesRead, err := osFile.Read(buf)
 		if err != nil && err != io.EOF {
-			return nil, err
+			return err
 		}
 		if bytesRead > 0 {
-			u.onWrite(buf, bytesRead)
+			if n, err := partDigestsMaker.Write(buf[0:bytesRead]); err != nil {
+				panic(err)
+			} else if n != bytesRead {
+				panic(io.ErrShortWrite)
+			}
 			if n, err := blake2b512Hash.Write(buf[0:bytesRead]); err != nil {
 				panic(err)
 			} else if n != bytesRead {
@@ -121,31 +118,23 @@ func makeHash(ctx context.Context, file paranoid.File, u ForUpload) (hash.Hash, 
 
 			select {
 			case <-doneCh:
-				return nil, ctx.Err()
+				return ctx.Err()
 			default:
 				lastCheckedDoneCh = size
 			}
 		}
 	}
 
-	err = file.CheckFile(osFile)
-	return blake2b512Hash, err
-}
-
-func (u *awsForUpload) populate(ctx context.Context, file paranoid.File) error {
-	u.partDigestsMaker.Reset(partSize)
-
-	blake2b512Hash, err := makeHash(ctx, file, u)
-	if err != nil {
+	if err := file.CheckFile(osFile); err != nil {
 		return err
 	}
 
 	u.blake2b.populate(blake2b512Hash)
-	u.partDigests = u.partDigestsMaker.Finish()
+	u.partDigests = partDigestsMaker.Finish()
 	return nil
 }
 
-func (u *awsForUpload) MarshalBinary() ([]byte, error) {
+func (u *ForUpload) MarshalBinary() ([]byte, error) {
 	partDigests, err := u.partDigests.MarshalBinary()
 	if err != nil {
 		return nil, err
@@ -160,7 +149,7 @@ func (u *awsForUpload) MarshalBinary() ([]byte, error) {
 	return result, nil
 }
 
-func (u *awsForUpload) UnmarshalBinary(data []byte) error {
+func (u *ForUpload) UnmarshalBinary(data []byte) error {
 	if len(data) < 64 {
 		return fmt.Errorf("invalid data")
 	}

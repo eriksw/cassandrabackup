@@ -26,7 +26,7 @@ import (
 type processor struct {
 	ctx context.Context
 
-	bucketClient bucket.Client
+	bucketClient *bucket.Client
 	digestCache  *digest.Cache
 
 	prospectedFiles chan fileRecord

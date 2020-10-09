@@ -29,12 +29,8 @@ import (
 
 var UploadSkipped = errors.New("upload skipped")
 
-func (c *awsClient) KeyStore() *KeyStore {
-	return &c.keyStore
-}
-
-func (c *awsClient) PutBlob(ctx context.Context, file paranoid.File, digests digest.ForUpload) error {
-	key := c.keyStore.AbsoluteKeyForBlob(digests.ForRestore())
+func (c *Client) PutBlob(ctx context.Context, file paranoid.File, digests digest.ForUpload) error {
+	key := c.absoluteKeyForBlob(digests.ForRestore())
 	if exists, err := c.blobExists(ctx, digests); err != nil {
 		uploadErrors.Inc()
 		return err
@@ -56,10 +52,10 @@ func (c *awsClient) PutBlob(ctx context.Context, file paranoid.File, digests dig
 	return nil
 }
 
-func (c *awsClient) DownloadBlob(ctx context.Context, digests digest.ForRestore, file *os.File) error {
-	key := c.keyStore.AbsoluteKeyForBlob(digests)
+func (c *Client) DownloadBlob(ctx context.Context, digests digest.ForRestore, file *os.File) error {
+	key := c.absoluteKeyForBlob(digests)
 	getObjectInput := &s3.GetObjectInput{
-		Bucket: &c.keyStore.bucket,
+		Bucket: &c.bucket,
 		Key:    &key,
 	}
 	attempts := 0
@@ -86,14 +82,14 @@ func (c *awsClient) DownloadBlob(ctx context.Context, digests digest.ForRestore,
 	}
 }
 
-func (c *awsClient) blobExists(ctx context.Context, digests digest.ForUpload) (bool, error) {
-	key := c.keyStore.AbsoluteKeyForBlob(digests.ForRestore())
+func (c *Client) blobExists(ctx context.Context, digests digest.ForUpload) (bool, error) {
+	key := c.absoluteKeyForBlob(digests.ForRestore())
 	if c.existsCache.Get(digests.ForRestore()) {
 		return true, nil
 	}
 
 	headObjectInput := &s3.HeadObjectInput{
-		Bucket: &c.keyStore.bucket,
+		Bucket: &c.bucket,
 		Key:    &key,
 	}
 	headObjectOutput, err := c.s3Svc.HeadObjectWithContext(ctx, headObjectInput)
@@ -110,7 +106,7 @@ func (c *awsClient) blobExists(ctx context.Context, digests digest.ForUpload) (b
 		zap.S().Infow("blob_exists_saw_delete_marker", "key", key)
 		return false, nil
 	}
-	expectedLength := digests.PartDigests().TotalLength()
+	expectedLength := digests.ContentLength()
 	actualLength := *headObjectOutput.ContentLength
 	if actualLength != expectedLength {
 		zap.S().Infow("blob_exists_saw_wrong_length", "key", key, "expected", expectedLength, "actual", actualLength)

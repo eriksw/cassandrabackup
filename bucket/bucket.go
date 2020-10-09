@@ -15,8 +15,6 @@
 package bucket
 
 import (
-	"context"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -29,10 +27,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3/s3manager/s3manageriface"
 	"github.com/retailnext/cassandrabackup/bucket/safeuploader"
 	"github.com/retailnext/cassandrabackup/cache"
-	"github.com/retailnext/cassandrabackup/digest"
-	"github.com/retailnext/cassandrabackup/manifests"
-	"github.com/retailnext/cassandrabackup/paranoid"
-	"github.com/retailnext/cassandrabackup/unixtime"
 	"go.uber.org/zap"
 	"gopkg.in/alecthomas/kingpin.v2"
 )
@@ -43,24 +37,14 @@ const getBlobRetriesLimit = 3
 const listManifestsRetriesLimit = 3
 const retrySleepPerAttempt = time.Second
 
-type Client interface {
-	ListManifests(ctx context.Context, identity manifests.NodeIdentity, startAfter, notAfter unixtime.Seconds) (manifests.ManifestKeys, error)
-	GetManifests(ctx context.Context, identity manifests.NodeIdentity, keys manifests.ManifestKeys) ([]manifests.Manifest, error)
-	PutManifest(ctx context.Context, identity manifests.NodeIdentity, manifest manifests.Manifest) error
-	ListHostNames(ctx context.Context, cluster string) ([]manifests.NodeIdentity, error)
-	ListClusters(ctx context.Context) ([]string, error)
-	DownloadBlob(ctx context.Context, digests digest.ForRestore, file *os.File) error
-	PutBlob(ctx context.Context, file paranoid.File, digests digest.ForUpload) error
-	KeyStore() *KeyStore
-}
-
-type awsClient struct {
+type Client struct {
 	s3Svc       s3iface.S3API
 	uploader    *safeuploader.SafeUploader
 	downloader  s3manageriface.DownloaderAPI
 	existsCache *ExistsCache
 
-	keyStore             KeyStore
+	bucket               string
+	prefix               string
 	serverSideEncryption *string
 }
 
@@ -72,22 +56,18 @@ var (
 )
 
 var (
-	Shared Client
+	Shared *Client
 	once   sync.Once
 )
 
-func GetBucketFlags() (*string, *string) {
-	return bucketName, bucketRegion
-}
-
-func OpenShared() Client {
+func OpenShared() *Client {
 	once.Do(func() {
-		Shared = newAWSClient()
+		Shared = newClient()
 	})
 	return Shared
 }
 
-func newAWSClient() *awsClient {
+func newClient() *Client {
 	cache.OpenShared()
 
 	awsConf := aws.NewConfig().WithRegion(*bucketRegion)
@@ -97,7 +77,7 @@ func newAWSClient() *awsClient {
 	}
 
 	s3Svc := s3.New(awsSession)
-	c := &awsClient{
+	c := &Client{
 		s3Svc: s3Svc,
 		uploader: &safeuploader.SafeUploader{
 			S3:                   s3Svc,
@@ -111,16 +91,17 @@ func newAWSClient() *awsClient {
 		existsCache: &ExistsCache{
 			cache: cache.Shared.Cache("bucket_exists"),
 		},
-		keyStore:             newKeyStore(*bucketName, strings.Trim(*bucketKeyPrefix, "/")),
+		bucket:               *bucketName,
+		prefix:               strings.Trim(*bucketKeyPrefix, "/"),
 		serverSideEncryption: aws.String(s3.ServerSideEncryptionAes256),
 	}
 	c.validateEncryptionConfiguration()
 	return c
 }
 
-func (c *awsClient) validateEncryptionConfiguration() {
+func (c *Client) validateEncryptionConfiguration() {
 	input := &s3.GetBucketEncryptionInput{
-		Bucket: &c.keyStore.bucket,
+		Bucket: &c.bucket,
 	}
 	output, err := c.s3Svc.GetBucketEncryption(input)
 	if err != nil {
@@ -133,5 +114,5 @@ func (c *awsClient) validateEncryptionConfiguration() {
 			}
 		}
 	}
-	zap.S().Fatalw("bucket_not_configured_with_sse_algorithm", "bucket", c.keyStore.bucket)
+	zap.S().Fatalw("bucket_not_configured_with_sse_algorithm", "bucket", c.bucket)
 }

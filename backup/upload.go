@@ -1,4 +1,4 @@
-// Copyright 2019 RetailNext, Inc.
+// Copyright 2020 RetailNext, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -53,7 +53,7 @@ func (p *processor) uploadFile(record fileRecord, wg *sync.WaitGroup, limiter <-
 		return
 	}
 
-	record.UploadError = p.bucketClient.PutBlob(p.ctx, record.File, record.Digests)
+	record.UploadError = p.bucketClient.PutBlob(p.ctx, p.identity, record.File, record.Digests)
 	switch record.UploadError {
 	case nil:
 		lgr.Debugw("upload_done", "path", record.File.Name(), "size", record.File.Len())

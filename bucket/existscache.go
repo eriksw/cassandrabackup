@@ -1,4 +1,4 @@
-// Copyright 2019 RetailNext, Inc.
+// Copyright 2020 RetailNext, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,11 +15,13 @@
 package bucket
 
 import (
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/retailnext/cassandrabackup/cache"
 	"github.com/retailnext/cassandrabackup/digest"
+	"github.com/retailnext/cassandrabackup/manifests"
 	"github.com/retailnext/cassandrabackup/unixtime"
 	"go.uber.org/zap"
 )
@@ -27,16 +29,50 @@ import (
 const objectLockSafetyMargin = 12 * time.Hour
 
 type ExistsCache struct {
-	cache *cache.Cache
+	Storage                  *cache.Storage
+	UseDeprecatedCommonFiles bool
+	lock                     sync.RWMutex
+	caches                   map[string]*cache.Cache
 }
 
-func (e *ExistsCache) Get(restore digest.ForRestore) bool {
+func (e *ExistsCache) getCache(node manifests.NodeIdentity) *cache.Cache {
+	if e.Storage == nil {
+		return nil
+	}
+	cacheName := "bucket_exists"
+	if !e.UseDeprecatedCommonFiles {
+		cacheName = "bucket_exists/" + node.Cluster + "/" + node.Hostname
+	}
+	e.lock.RLock()
+	nodeCache, ok := e.caches[cacheName]
+	e.lock.RUnlock()
+	if ok {
+		return nodeCache
+	}
+
+	e.lock.Lock()
+	defer e.lock.Unlock()
+	if e.caches == nil {
+		e.caches = make(map[string]*cache.Cache)
+	}
+	nodeCache, ok = e.caches[cacheName]
+	if ok {
+		return nodeCache
+	}
+
+	nodeCache = e.Storage.Cache(cacheName)
+	e.caches[cacheName] = nodeCache
+	return nodeCache
+}
+
+func (e *ExistsCache) Get(node manifests.NodeIdentity, restore digest.ForRestore) bool {
+	c := e.getCache(node)
 	var exists bool
 	key, err := restore.MarshalBinary()
 	if err != nil {
 		panic(err)
 	}
-	err = e.cache.Get(key, func(value []byte) error {
+	err = c.Get(key, func(value []byte) error {
 		var lockedUntil unixtime.Seconds
 		if err := lockedUntil.UnmarshalBinary(value); err != nil {
 			return err
@@ -59,7 +95,8 @@ func (e *ExistsCache) Get(restore digest.ForRestore) bool {
 	return exists
 }
 
-func (e *ExistsCache) Put(restore digest.ForRestore, lockedUntil time.Time) {
+func (e *ExistsCache) Put(node manifests.NodeIdentity, restore digest.ForRestore, lockedUntil time.Time) {
+	c := e.getCache(node)
 	key, err := restore.MarshalBinary()
 	if err != nil {
 		panic(err)
@@ -69,7 +106,7 @@ func (e *ExistsCache) Put(restore digest.ForRestore, lockedUntil time.Time) {
 	if err != nil {
 		panic(err)
 	}
-	err = e.cache.Put(key, value)
+	err = c.Put(key, value)
 	if err != nil {
 		zap.S().Warnw("blob_exists_cache_put_error", "key", restore, "err", err)
 	}

@@ -28,6 +28,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/retailnext/cassandrabackup/bucket"
 	"github.com/retailnext/cassandrabackup/digest"
+	"github.com/retailnext/cassandrabackup/manifests"
 	"github.com/retailnext/cassandrabackup/paranoid"
 	"github.com/retailnext/cassandrabackup/restore/plan"
 	"github.com/retailnext/writefile"
@@ -86,7 +87,7 @@ func newWorker(directory string, ensureOwnership bool) *worker {
 	return &w
 }
 
-func (w *worker) restoreFiles(ctx context.Context, files map[string]digest.ForRestore) error {
+func (w *worker) restoreFiles(ctx context.Context, files map[string]downloadableFile) error {
 	registerMetrics()
 	w.ctx = ctx
 	w.limiter = make(chan struct{}, 4)
@@ -111,7 +112,7 @@ func (w *worker) restoreFiles(ctx context.Context, files map[string]digest.ForRe
 	return err
 }
 
-func (w *worker) restoreFile(name string, forRestore digest.ForRestore) {
+func (w *worker) restoreFile(name string, df downloadableFile) {
 	lgr := zap.S()
 	var err error
 	defer func() {
@@ -128,24 +129,24 @@ func (w *worker) restoreFile(name string, forRestore digest.ForRestore) {
 		w.wg.Done()
 	}()
 
-	path := filepath.Join(w.target.Directory, name)
-	if maybeFile, maybeFileErr := paranoid.NewFile(path); maybeFileErr == nil {
+	targetPath := filepath.Join(w.target.Directory, name)
+	if maybeFile, maybeFileErr := paranoid.NewFile(targetPath); maybeFileErr == nil {
 		if forUpload, forUploadErr := w.cache.Get(w.ctx, maybeFile); forUploadErr == nil {
-			if forUpload.ForRestore() == forRestore {
+			if forUpload.ForRestore() == df.digest {
 				skippedBytes.Add(float64(maybeFile.Len()))
 				skippedFiles.Inc()
 				return
 			} else {
-				lgr.Infow("existing_file_digest_mismatch", "path", path)
+				lgr.Infow("existing_file_digest_mismatch", "path", targetPath)
 			}
 		} else {
-			lgr.Infow("existing_file_digest_error", "path", path, "err", forUploadErr)
+			lgr.Infow("existing_file_digest_error", "path", targetPath, "err", forUploadErr)
 		}
 	}
 
 	err = w.target.WriteFile(name, func(file *os.File) error {
 		start := time.Now()
-		downloadErr := w.client.DownloadBlob(w.ctx, forRestore, file)
+		downloadErr := w.client.DownloadBlob(w.ctx, df.node, df.digest, file)
 		if downloadErr != nil {
 			downloadErrors.Inc()
 			return downloadErr
@@ -222,24 +223,32 @@ func registerMetrics() {
 	})
 }
 
-type downloadPlan struct {
-	files        map[string]digest.ForRestore
-	changedFiles map[string][]digest.ForRestore
+type downloadableFile struct {
+	node   manifests.NodeIdentity
+	digest digest.ForRestore
 }
 
-func (dp *downloadPlan) addHost(prefix string, nodePlan plan.NodePlan) {
+type downloadPlan struct {
+	files        map[string]downloadableFile
+	changedFiles map[string][]downloadableFile
+}
+
+func (dp *downloadPlan) addHost(prefix string, node manifests.NodeIdentity, nodePlan plan.NodePlan) {
 	if dp.files == nil {
-		dp.files = make(map[string]digest.ForRestore)
+		dp.files = make(map[string]downloadableFile)
 	}
 	for fileName, fileDigest := range nodePlan.Files {
 		if prefix != "" {
 			fileName = path.Join(prefix, fileName)
 		}
-		dp.files[fileName] = fileDigest
+		dp.files[fileName] = downloadableFile{
+			node:   node,
+			digest: fileDigest,
+		}
 	}
 	if len(nodePlan.ChangedFiles) > 0 {
 		if dp.changedFiles == nil {
-			dp.changedFiles = make(map[string][]digest.ForRestore)
+			dp.changedFiles = make(map[string][]downloadableFile)
 		}
 		for fileName, historyEntries := range nodePlan.ChangedFiles {
 			if prefix != "" {
@@ -247,19 +256,22 @@ func (dp *downloadPlan) addHost(prefix string, nodePlan plan.NodePlan) {
 			}
 			historyForFile := dp.changedFiles[fileName]
 			for _, entry := range historyEntries {
-				historyForFile = append(historyForFile, entry.Digest)
+				historyForFile = append(historyForFile, downloadableFile{
+					node:   node,
+					digest: entry.Digest,
+				})
 			}
 			dp.changedFiles[fileName] = historyForFile
 		}
 	}
 }
 
-func (dp *downloadPlan) includeChanged(prefix string) map[string]digest.ForRestore {
+func (dp *downloadPlan) includeChanged(prefix string) map[string]downloadableFile {
 	if len(dp.changedFiles) == 0 {
 		return dp.files
 	}
 
-	result := make(map[string]digest.ForRestore)
+	result := make(map[string]downloadableFile)
 	for fileName, fileDigest := range dp.files {
 		result[fileName] = fileDigest
 	}

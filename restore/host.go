@@ -1,4 +1,4 @@
-// Copyright 2019 RetailNext, Inc.
+// Copyright 2020 RetailNext, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,9 +25,11 @@ import (
 	"go.uber.org/zap"
 )
 
-var NoSnapshotsFound = errors.New("no snapshots found for host")
-var NoBackupsFound = errors.New("no backups found for host")
-var ChangesDetected = errors.New("file changes detected")
+var (
+	NoSnapshotsFound = errors.New("no snapshots found for host")
+	NoBackupsFound   = errors.New("no backups found for host")
+	ChangesDetected  = errors.New("file changes detected")
+)
 
 func RestoreHost(ctx context.Context) error {
 	identity := nodeidentity.ForRestore(ctx, hostCmdCluster, hostCmdHostname, hostCmdHostnamePattern)
@@ -66,5 +68,13 @@ func RestoreHost(ctx context.Context) error {
 	}
 
 	w := newWorker("/var/lib/cassandra/data", true)
-	return w.restoreFiles(ctx, nodePlan.Files)
+
+	df := make(map[string]downloadableFile, len(nodePlan.Files))
+	for path, forRestore := range nodePlan.Files {
+		df[path] = downloadableFile{
+			node:   identity,
+			digest: forRestore,
+		}
+	}
+	return w.restoreFiles(ctx, df)
 }

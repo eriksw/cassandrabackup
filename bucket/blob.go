@@ -23,15 +23,15 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/retailnext/cassandrabackup/digest"
+	"github.com/retailnext/cassandrabackup/manifests"
 	"github.com/retailnext/cassandrabackup/paranoid"
 	"go.uber.org/zap"
 )
 
 var UploadSkipped = errors.New("upload skipped")
 
-func (c *Client) PutBlob(ctx context.Context, file paranoid.File, digests digest.ForUpload) error {
-	key := c.absoluteKeyForBlob(digests.ForRestore())
-	if exists, err := c.blobExists(ctx, digests); err != nil {
+func (c *Client) PutBlob(ctx context.Context, node manifests.NodeIdentity, file paranoid.File, digests digest.ForUpload) error {
+	if exists, err := c.blobExists(ctx, node, digests); err != nil {
 		uploadErrors.Inc()
 		return err
 	} else if exists {
@@ -40,6 +40,7 @@ func (c *Client) PutBlob(ctx context.Context, file paranoid.File, digests digest
 		return UploadSkipped
 	}
 
+	key := c.layout.AbsoluteKeyForBlob(node, digests.ForRestore())
 	if err := c.uploader.UploadFile(ctx, key, file, digests); err != nil {
 		uploadErrors.Inc()
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -52,8 +53,8 @@ func (c *Client) PutBlob(ctx context.Context, file paranoid.File, digests digest
 	return nil
 }
 
-func (c *Client) DownloadBlob(ctx context.Context, digests digest.ForRestore, file *os.File) error {
-	key := c.absoluteKeyForBlob(digests)
+func (c *Client) DownloadBlob(ctx context.Context, node manifests.NodeIdentity, digests digest.ForRestore, file *os.File) error {
+	key := c.layout.AbsoluteKeyForBlob(node, digests)
 	getObjectInput := &s3.GetObjectInput{
 		Bucket: &c.bucket,
 		Key:    &key,
@@ -82,12 +83,12 @@ func (c *Client) DownloadBlob(ctx context.Context, digests digest.ForRestore, fi
 	}
 }
 
-func (c *Client) blobExists(ctx context.Context, digests digest.ForUpload) (bool, error) {
-	key := c.absoluteKeyForBlob(digests.ForRestore())
-	if c.existsCache.Get(digests.ForRestore()) {
+func (c *Client) blobExists(ctx context.Context, node manifests.NodeIdentity, digests digest.ForUpload) (bool, error) {
+	if c.existsCache.Get(node, digests.ForRestore()) {
 		return true, nil
 	}
 
+	key := c.layout.AbsoluteKeyForBlob(node, digests.ForRestore())
 	headObjectInput := &s3.HeadObjectInput{
 		Bucket: &c.bucket,
 		Key:    &key,
@@ -114,7 +115,7 @@ func (c *Client) blobExists(ctx context.Context, digests digest.ForUpload) (bool
 	}
 
 	if headObjectOutput.ObjectLockRetainUntilDate != nil {
-		c.existsCache.Put(digests.ForRestore(), *headObjectOutput.ObjectLockRetainUntilDate)
+		c.existsCache.Put(node, digests.ForRestore(), *headObjectOutput.ObjectLockRetainUntilDate)
 	}
 
 	return true, nil

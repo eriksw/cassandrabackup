@@ -1,4 +1,4 @@
-// Copyright 2019 RetailNext, Inc.
+// Copyright 2020 RetailNext, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ import (
 
 func (c *Client) ListHostNames(ctx context.Context, cluster string) ([]manifests.NodeIdentity, error) {
 	lgr := zap.S()
-	prefix := c.absoluteKeyPrefixForClusterHosts(cluster)
+	prefix := c.layout.absoluteKeyPrefixForClusterHosts(cluster)
 	input := &s3.ListObjectsV2Input{
 		Bucket:    &c.bucket,
 		Delimiter: aws.String("/"),
@@ -33,7 +33,7 @@ func (c *Client) ListHostNames(ctx context.Context, cluster string) ([]manifests
 	}
 	var result []manifests.NodeIdentity
 	err := c.s3Svc.ListObjectsV2PagesWithContext(ctx, input, func(page *s3.ListObjectsV2Output, lastPage bool) bool {
-		nodes, bonus := c.decodeClusterHosts(page.CommonPrefixes)
+		nodes, bonus := c.layout.decodeClusterHosts(page.CommonPrefixes)
 		if len(bonus) > 0 {
 			lgr.Warnw("unexpected_objects_in_bucket", "keys", bonus)
 		}
@@ -52,7 +52,7 @@ func (c *Client) ListHostNames(ctx context.Context, cluster string) ([]manifests
 
 func (c *Client) ListClusters(ctx context.Context) ([]string, error) {
 	lgr := zap.S()
-	prefix := c.absoluteKeyPrefixForClusters()
+	prefix := c.layout.absoluteKeyPrefixForClusters()
 	input := &s3.ListObjectsV2Input{
 		Bucket:    &c.bucket,
 		Delimiter: aws.String("/"),
@@ -61,7 +61,7 @@ func (c *Client) ListClusters(ctx context.Context) ([]string, error) {
 	var result []string
 	err := c.s3Svc.ListObjectsV2PagesWithContext(ctx, input, func(page *s3.ListObjectsV2Output, lastPage bool) bool {
 		for _, obj := range page.CommonPrefixes {
-			cluster, err := c.decodeCluster(*obj.Prefix)
+			cluster, err := c.layout.decodeCluster(*obj.Prefix)
 			if err != nil {
 				lgr.Errorw("decode_cluster_error", "err", err)
 			} else {

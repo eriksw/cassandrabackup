@@ -1,4 +1,4 @@
-// Copyright 2019 RetailNext, Inc.
+// Copyright 2020 RetailNext, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -56,7 +56,7 @@ func RestoreCluster(ctx context.Context) error {
 
 		nodePlan.Filter(filter)
 
-		dp.addHost(hostIdentity.Hostname, nodePlan)
+		dp.addHost(hostIdentity.Hostname, hostIdentity, nodePlan)
 	}
 
 	files := dp.includeChanged("PREVIOUS_VERSIONS")

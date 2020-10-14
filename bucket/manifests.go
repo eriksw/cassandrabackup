@@ -1,4 +1,4 @@
-// Copyright 2019 RetailNext, Inc.
+// Copyright 2020 RetailNext, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,8 +27,8 @@ import (
 
 func (c *Client) ListManifests(ctx context.Context, identity manifests.NodeIdentity, startAfter, notAfter unixtime.Seconds) (manifests.ManifestKeys, error) {
 	lgr := zap.S()
-	prefixKey := c.absoluteKeyPrefixForManifests(identity)
-	startAfterKey := c.absoluteKeyForManifestTimeRange(identity, startAfter)
+	prefixKey := c.layout.absoluteKeyPrefixForManifests(identity)
+	startAfterKey := c.layout.absoluteKeyForManifestTimeRange(identity, startAfter)
 	input := &s3.ListObjectsV2Input{
 		Bucket:     &c.bucket,
 		Delimiter:  aws.String("/"),
@@ -38,7 +38,7 @@ func (c *Client) ListManifests(ctx context.Context, identity manifests.NodeIdent
 
 	notAfterKey := ""
 	if notAfter > 0 {
-		notAfterKey = c.absoluteKeyForManifestTimeRange(identity, notAfter)
+		notAfterKey = c.layout.absoluteKeyForManifestTimeRange(identity, notAfter)
 	}
 	attempts := 0
 	for {
@@ -83,14 +83,14 @@ func (c *Client) PutManifest(ctx context.Context, identity manifests.NodeIdentit
 	if manifest.ManifestType == manifests.ManifestTypeInvalid {
 		panic("invalid manifest type")
 	}
-	absoluteKey := c.absoluteKeyForManifest(identity, manifest.Key())
+	absoluteKey := c.layout.absoluteKeyForManifest(identity, manifest.Key())
 	return c.putDocument(ctx, absoluteKey, manifest)
 }
 
 func (c *Client) GetManifests(ctx context.Context, identity manifests.NodeIdentity, keys manifests.ManifestKeys) ([]manifests.Manifest, error) {
 	var results []manifests.Manifest
 	for _, manifestKey := range keys {
-		absoluteKey := c.absoluteKeyForManifest(identity, manifestKey)
+		absoluteKey := c.layout.absoluteKeyForManifest(identity, manifestKey)
 		var m manifests.Manifest
 		if err := c.getDocument(ctx, absoluteKey, &m); err != nil {
 			zap.S().Errorw("get_manifest_error", "key", absoluteKey, "err", err)

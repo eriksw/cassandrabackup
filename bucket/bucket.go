@@ -31,11 +31,13 @@ import (
 	"gopkg.in/alecthomas/kingpin.v2"
 )
 
-const putJsonRetriesLimit = 3
-const getJsonRetriesLimit = 3
-const getBlobRetriesLimit = 3
-const listManifestsRetriesLimit = 3
-const retrySleepPerAttempt = time.Second
+const (
+	putJsonRetriesLimit       = 3
+	getJsonRetriesLimit       = 3
+	getBlobRetriesLimit       = 3
+	listManifestsRetriesLimit = 3
+	retrySleepPerAttempt      = time.Second
+)
 
 type Client struct {
 	s3Svc       s3iface.S3API
@@ -43,8 +45,8 @@ type Client struct {
 	downloader  s3manageriface.DownloaderAPI
 	existsCache *ExistsCache
 
+	layout               Layout
 	bucket               string
-	prefix               string
 	serverSideEncryption *string
 }
 
@@ -89,10 +91,14 @@ func newClient() *Client {
 			d.PartSize = 64 * 1024 * 1024 // 64MB per part
 		}),
 		existsCache: &ExistsCache{
-			cache: cache.Shared.Cache("bucket_exists"),
+			Storage:                  cache.Shared,
+			UseDeprecatedCommonFiles: true,
+		},
+		layout: Layout{
+			Prefix:                   strings.Trim(*bucketKeyPrefix, "/"),
+			UseDeprecatedCommonFiles: true,
 		},
 		bucket:               *bucketName,
-		prefix:               strings.Trim(*bucketKeyPrefix, "/"),
 		serverSideEncryption: aws.String(s3.ServerSideEncryptionAes256),
 	}
 	c.validateEncryptionConfiguration()

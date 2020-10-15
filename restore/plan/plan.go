@@ -1,4 +1,4 @@
-// Copyright 2019 RetailNext, Inc.
+// Copyright 2020 RetailNext, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,6 +17,8 @@ package plan
 import (
 	"context"
 
+	"gopkg.in/alecthomas/kingpin.v2"
+
 	"github.com/retailnext/cassandrabackup/bucket"
 	"github.com/retailnext/cassandrabackup/digest"
 	"github.com/retailnext/cassandrabackup/manifests"
@@ -34,6 +36,8 @@ type NodePlan struct {
 	ChangedFiles      map[string][]HistoryEntry
 	SelectedManifests manifests.ManifestKeys
 }
+
+var maximizeMode = kingpin.Flag("maximize-plan", "Use the first snapshot instead of the last when assembling a restore plan").Bool()
 
 func Create(ctx context.Context, identity manifests.NodeIdentity, startAfter, notAfter unixtime.Seconds) (NodePlan, error) {
 	lgr := zap.S().With("identity", identity)
@@ -56,10 +60,19 @@ func getManifests(ctx context.Context, identity manifests.NodeIdentity, startAft
 	}
 
 	snapshotIndex := -1
-	for i := len(keys) - 1; i >= 0; i-- {
-		if keys[i].ManifestType == manifests.ManifestTypeSnapshot {
-			snapshotIndex = i
-			break
+	if *maximizeMode {
+		for i := range keys {
+			if keys[i].ManifestType == manifests.ManifestTypeSnapshot {
+				snapshotIndex = i
+				break
+			}
+		}
+	} else {
+		for i := len(keys) - 1; i >= 0; i-- {
+			if keys[i].ManifestType == manifests.ManifestTypeSnapshot {
+				snapshotIndex = i
+				break
+			}
 		}
 	}
 	if snapshotIndex >= 0 {

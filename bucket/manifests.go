@@ -18,8 +18,6 @@ import (
 	"context"
 	"path/filepath"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/retailnext/cassandrabackup/manifests"
 	"github.com/retailnext/cassandrabackup/unixtime"
 	"go.uber.org/zap"
@@ -27,56 +25,30 @@ import (
 
 func (c *Client) ListManifests(ctx context.Context, identity manifests.NodeIdentity, startAfter, notAfter unixtime.Seconds) (manifests.ManifestKeys, error) {
 	lgr := zap.S()
-	prefixKey := c.layout.absoluteKeyPrefixForManifests(identity)
-	startAfterKey := c.layout.absoluteKeyForManifestTimeRange(identity, startAfter)
-	input := &s3.ListObjectsV2Input{
-		Bucket:     &c.bucket,
-		Delimiter:  aws.String("/"),
-		Prefix:     &prefixKey,
-		StartAfter: &startAfterKey,
+	prefix := c.layout.absoluteKeyPrefixForManifests(identity)
+	startOffset := c.layout.absoluteKeyForManifestTimeRange(identity, startAfter)
+	// TODO this is probably wrong
+	endOffset := ""
+	if notAfter > 0 {
+		endOffset = c.layout.absoluteKeyForManifestTimeRange(identity, notAfter+1)
 	}
 
-	notAfterKey := ""
-	if notAfter > 0 {
-		notAfterKey = c.layout.absoluteKeyForManifestTimeRange(identity, notAfter)
+	keys, err := c.storageClient.ListObjects(ctx, prefix, startOffset, endOffset)
+	if err != nil {
+		return nil, err
 	}
-	attempts := 0
-	for {
-		var keys manifests.ManifestKeys
-		err := c.s3Svc.ListObjectsV2PagesWithContext(ctx, input, func(output *s3.ListObjectsV2Output, b bool) bool {
-			var done bool
-			for _, commonPrefix := range output.CommonPrefixes {
-				lgr.Debugw("list_manifests_saw_common_prefix", "prefix", commonPrefix.Prefix)
-			}
-			for _, obj := range output.Contents {
-				key := *obj.Key
-				if notAfterKey != "" && key > notAfterKey {
-					done = true
-				} else {
-					name := filepath.Base(key)
-					var manifestKey manifests.ManifestKey
-					if err := manifestKey.PopulateFromFileName(name); err != nil {
-						lgr.Warnw("list_manifests_ignoring_bad_filename", "name", name, "err", err)
-					} else {
-						keys = append(keys, manifestKey)
-					}
-				}
-			}
-			return !done
-		})
-		if err != nil {
-			attempts++
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return nil, ctxErr
-			}
-			if IsNoSuchKey(err) || attempts > listManifestsRetriesLimit {
-				return nil, err
-			}
-			lgr.Errorw("list_manifests_s3_error", "err", err, "attempts", attempts)
+
+	var result manifests.ManifestKeys
+	for _, key := range keys {
+		name := filepath.Base(key)
+		var manifestKey manifests.ManifestKey
+		if err := manifestKey.PopulateFromFileName(name); err != nil {
+			lgr.Warnw("list_manifests_ignoring_bad_filename", "name", name, "err", err)
 		} else {
-			return keys, nil
+			result = append(result, manifestKey)
 		}
 	}
+	return result, nil
 }
 
 func (c *Client) PutManifest(ctx context.Context, identity manifests.NodeIdentity, manifest manifests.Manifest) error {

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package safeuploader
+package s3storage
 
 import (
 	"context"
@@ -20,6 +20,8 @@ import (
 	"io"
 	"os"
 	"sync"
+
+	"github.com/retailnext/cassandrabackup/unixtime"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/request"
@@ -30,21 +32,14 @@ import (
 	"go.uber.org/zap"
 )
 
-type SafeUploader struct {
-	S3                   s3iface.S3API
-	Bucket               string
-	ServerSideEncryption *string
-	StorageClass         *string
-}
-
-func (u *SafeUploader) UploadFile(ctx context.Context, key string, file paranoid.File, digests digest.ForUpload) error {
+func (c *Client) PutFile(ctx context.Context, key string, file paranoid.File, digests digest.ForUpload) (bool, unixtime.Seconds, error) {
 	upl := fileUploader{
-		s3Svc: u.S3,
+		s3Svc: c.s3,
 
-		bucket:               u.Bucket,
+		bucket:               c.bucket,
 		key:                  key,
-		serverSideEncryption: u.ServerSideEncryption,
-		storageClass:         u.StorageClass,
+		serverSideEncryption: c.serverSideEncryption,
+		storageClass:         c.storageClass,
 
 		file:    file,
 		digests: digests,
@@ -52,7 +47,14 @@ func (u *SafeUploader) UploadFile(ctx context.Context, key string, file paranoid
 		errors: make(map[int64]error),
 		etags:  make(map[int64]string),
 	}
-	return upl.Upload(ctx)
+
+	var lockedUntil unixtime.Seconds
+	t0 := unixtime.Now()
+	err := upl.Upload(ctx)
+	if err != nil && c.objectLockDuration > 0 {
+		lockedUntil = t0.Add(c.objectLockDuration)
+	}
+	return false, lockedUntil, err
 }
 
 type fileUploader struct {
@@ -130,9 +132,7 @@ func (u *fileUploader) Upload(ctx context.Context) error {
 		}
 	}
 	u.wg.Wait()
-
-	err = u.tryToComplete()
-	return err
+	return u.tryToComplete()
 }
 
 func (u *fileUploader) tryToComplete() error {
@@ -245,8 +245,10 @@ func (u *fileUploader) uploadSinglePart(ctx context.Context) error {
 	return err
 }
 
-const md5Header = "Content-Md5"
-const sha256Header = "X-Amz-Content-Sha256"
+const (
+	md5Header    = "Content-Md5"
+	sha256Header = "X-Amz-Content-Sha256"
+)
 
 type UploadPartFailures map[int64]error
 

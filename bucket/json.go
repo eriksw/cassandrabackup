@@ -18,12 +18,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mailru/easyjson"
-	"go.uber.org/zap"
 )
 
 func (c *Client) putDocument(ctx context.Context, absoluteKey string, v easyjson.Marshaler) error {
@@ -36,58 +32,14 @@ func (c *Client) putDocument(ctx context.Context, absoluteKey string, v easyjson
 		panic(err)
 	}
 
-	putObjectInput := &s3.PutObjectInput{
-		Bucket:               &c.bucket,
-		Key:                  &absoluteKey,
-		ContentType:          aws.String("application/json"),
-		ContentEncoding:      aws.String("gzip"),
-		ServerSideEncryption: c.serverSideEncryption,
-		Body:                 bytes.NewReader(encodeBuffer.Bytes()),
-	}
-	attempts := 0
-	for {
-		_, err := c.s3Svc.PutObjectWithContext(ctx, putObjectInput)
-		if err != nil {
-			attempts++
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return ctxErr
-			}
-			if attempts > putJsonRetriesLimit {
-				return err
-			}
-			zap.S().Warnw("s3_put_object_error", "err", err, "attempts", attempts)
-			time.Sleep(time.Duration(attempts) * retrySleepPerAttempt)
-		} else {
-			return nil
-		}
-	}
+	_, _, err := c.storageClient.PutBytes(ctx, absoluteKey, "application/json", "gzip", encodeBuffer.Bytes())
+	return err
 }
 
 func (c *Client) getDocument(ctx context.Context, absoluteKey string, v easyjson.Unmarshaler) error {
-	getObjectInput := &s3.GetObjectInput{
-		Bucket: &c.bucket,
-		Key:    &absoluteKey,
+	contents, err := c.storageClient.GetBytes(ctx, absoluteKey)
+	if err != nil {
+		return err
 	}
-	attempts := 0
-	for {
-		getObjectOutput, err := c.s3Svc.GetObjectWithContext(ctx, getObjectInput)
-		if err != nil {
-			if IsNoSuchKey(err) {
-				return err
-			}
-			attempts++
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return ctxErr
-			}
-			if attempts > getJsonRetriesLimit {
-				return err
-			}
-			zap.S().Warnw("s3_get_object_error", "err", err, "attempts", attempts)
-			time.Sleep(time.Duration(attempts) * retrySleepPerAttempt)
-		} else {
-			err = easyjson.UnmarshalFromReader(getObjectOutput.Body, v)
-			_ = getObjectOutput.Body.Close()
-			return err
-		}
-	}
+	return easyjson.Unmarshal(contents, v)
 }

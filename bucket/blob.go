@@ -17,21 +17,19 @@ package bucket
 import (
 	"context"
 	"errors"
-	"io"
 	"os"
 
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/retailnext/cassandrabackup/digest"
 	"github.com/retailnext/cassandrabackup/manifests"
 	"github.com/retailnext/cassandrabackup/paranoid"
-	"go.uber.org/zap"
+	"github.com/retailnext/cassandrabackup/unixtime"
 )
 
 var UploadSkipped = errors.New("upload skipped")
 
 func (c *Client) PutBlob(ctx context.Context, node manifests.NodeIdentity, file paranoid.File, digests digest.ForUpload) error {
-	if exists, err := c.blobExists(ctx, node, digests); err != nil {
+	if exists, err := c.blobExists(ctx, node, digests.ForRestore()); err != nil {
 		uploadErrors.Inc()
 		return err
 	} else if exists {
@@ -41,83 +39,53 @@ func (c *Client) PutBlob(ctx context.Context, node manifests.NodeIdentity, file 
 	}
 
 	key := c.layout.AbsoluteKeyForBlob(node, digests.ForRestore())
-	if err := c.uploader.UploadFile(ctx, key, file, digests); err != nil {
+	eventHold, lockedUntil, err := c.storageClient.PutFile(ctx, key, file, digests)
+	if err != nil {
 		uploadErrors.Inc()
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
 		return err
 	}
+	c.updateExistsCache(node, digests.ForRestore(), eventHold, lockedUntil)
 	uploadedFiles.Inc()
 	uploadedBytes.Add(float64(file.Len()))
 	return nil
 }
 
-func (c *Client) DownloadBlob(ctx context.Context, node manifests.NodeIdentity, digests digest.ForRestore, file *os.File) error {
-	key := c.layout.AbsoluteKeyForBlob(node, digests)
-	getObjectInput := &s3.GetObjectInput{
-		Bucket: &c.bucket,
-		Key:    &key,
+func (c *Client) DownloadBlob(ctx context.Context, node manifests.NodeIdentity, restore digest.ForRestore, file *os.File) error {
+	key := c.layout.AbsoluteKeyForBlob(node, restore)
+	err := c.storageClient.GetFile(ctx, file, key)
+	if err != nil {
+		return err
 	}
-	attempts := 0
-	for {
-		if _, err := file.Seek(0, io.SeekStart); err != nil {
-			zap.S().Panicw("get_blob_seek_error", "err", err)
-		}
-		if err := file.Truncate(0); err != nil {
-			zap.S().Panicw("get_blob_truncate_error", "err", err)
-		}
-		_, err := c.downloader.DownloadWithContext(ctx, file, getObjectInput)
-		if err != nil {
-			attempts++
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return ctxErr
-			}
-			if IsNoSuchKey(err) || attempts > getBlobRetriesLimit {
-				return err
-			}
-			zap.S().Errorw("get_blob_s3_error", "err", err, "attempts", attempts)
-		} else {
-			return digests.Verify(ctx, file)
-		}
+	return restore.Verify(ctx, file)
+}
+
+func (c *Client) updateExistsCache(node manifests.NodeIdentity, restore digest.ForRestore, eventHold bool, lockedUntil unixtime.Seconds) {
+	if eventHold {
+		lockedUntil = unixtime.Now().Add(c.storageClient.LockDuration())
+	}
+	if lockedUntil > 0 {
+		c.existsCache.Put(node, restore, lockedUntil)
 	}
 }
 
-func (c *Client) blobExists(ctx context.Context, node manifests.NodeIdentity, digests digest.ForUpload) (bool, error) {
-	if c.existsCache.Get(node, digests.ForRestore()) {
+func (c *Client) blobExists(ctx context.Context, node manifests.NodeIdentity, restore digest.ForRestore) (bool, error) {
+	if c.existsCache.Get(node, restore) {
 		return true, nil
 	}
 
-	key := c.layout.AbsoluteKeyForBlob(node, digests.ForRestore())
-	headObjectInput := &s3.HeadObjectInput{
-		Bucket: &c.bucket,
-		Key:    &key,
-	}
-	headObjectOutput, err := c.s3Svc.HeadObjectWithContext(ctx, headObjectInput)
+	key := c.layout.AbsoluteKeyForBlob(node, restore)
+	eventHold, lockedUntil, err := c.storageClient.HeadObject(ctx, key)
 	if err != nil {
-		if IsNoSuchKey(err) {
+		if c.storageClient.IsNotFoundOrDeleted(err) {
 			return false, nil
-		}
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return false, ctxErr
 		}
 		return false, err
 	}
-	if headObjectOutput.DeleteMarker != nil && *headObjectOutput.DeleteMarker {
-		zap.S().Infow("blob_exists_saw_delete_marker", "key", key)
-		return false, nil
-	}
-	expectedLength := digests.ContentLength()
-	actualLength := *headObjectOutput.ContentLength
-	if actualLength != expectedLength {
-		zap.S().Infow("blob_exists_saw_wrong_length", "key", key, "expected", expectedLength, "actual", actualLength)
-		return false, nil
-	}
 
-	if headObjectOutput.ObjectLockRetainUntilDate != nil {
-		c.existsCache.Put(node, digests.ForRestore(), *headObjectOutput.ObjectLockRetainUntilDate)
-	}
-
+	c.updateExistsCache(node, restore, eventHold, lockedUntil)
 	return true, nil
 }
 

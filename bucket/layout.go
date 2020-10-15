@@ -20,8 +20,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/aws/aws-sdk-go/service/s3"
-
 	"github.com/retailnext/cassandrabackup/digest"
 	"github.com/retailnext/cassandrabackup/manifests"
 	"github.com/retailnext/cassandrabackup/unixtime"
@@ -91,12 +89,41 @@ func (l Layout) decodeCluster(key string) (string, error) {
 	return string(cluster), err
 }
 
-func (l Layout) decodeClusterHosts(prefixes []*s3.CommonPrefix) ([]manifests.NodeIdentity, []string) {
+func (l Layout) decodeClusters(prefixes []string) ([]string, []string) {
+	clustersPrefix := l.absoluteKeyPrefixForClusters()
+	skip := len(clustersPrefix)
+	var result, bonus []string
+	for _, raw := range prefixes {
+		if !strings.HasPrefix(clustersPrefix, raw) {
+			bonus = append(bonus, raw)
+			continue
+		}
+		trimmed := raw[skip:]
+		parts := strings.Split(trimmed, "/")
+		if len(parts) != 2 {
+			bonus = append(bonus, raw)
+			continue
+		}
+		cluster, err := base64.URLEncoding.DecodeString(parts[0])
+		if err != nil {
+			bonus = append(bonus, raw)
+			continue
+		}
+		result = append(result, string(cluster))
+	}
+	return result, bonus
+}
+
+func (l Layout) decodeClusterHosts(prefixes []string) ([]manifests.NodeIdentity, []string) {
 	result := make([]manifests.NodeIdentity, 0, len(prefixes))
 	var bonus []string
-	skip := len(l.absoluteKeyPrefixForClusters())
-	for _, obj := range prefixes {
-		raw := *obj.Prefix
+	clustersPrefix := l.absoluteKeyPrefixForClusters()
+	skip := len(clustersPrefix)
+	for _, raw := range prefixes {
+		if !strings.HasPrefix(clustersPrefix, raw) {
+			bonus = append(bonus, raw)
+			continue
+		}
 		trimmed := raw[skip:]
 		parts := strings.Split(trimmed, "/")
 		if len(parts) != 3 {

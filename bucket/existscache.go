@@ -77,10 +77,12 @@ func (e *ExistsCache) Get(node manifests.NodeIdentity, restore digest.ForRestore
 		if err := lockedUntil.UnmarshalBinary(value); err != nil {
 			return err
 		}
-		if time.Now().Add(objectLockSafetyMargin).Unix() < int64(lockedUntil) {
+		threshold := unixtime.Now().Add(objectLockSafetyMargin)
+		if threshold < lockedUntil {
 			exists = true
 			return nil
 		} else {
+			zap.S().Debugw("exists_cache_miss", "locked_until", lockedUntil, "threshold", threshold)
 			existsCacheLockTimeMisses.Inc()
 		}
 		return cache.DoNotPromote
@@ -95,14 +97,13 @@ func (e *ExistsCache) Get(node manifests.NodeIdentity, restore digest.ForRestore
 	return exists
 }
 
-func (e *ExistsCache) Put(node manifests.NodeIdentity, restore digest.ForRestore, lockedUntil time.Time) {
+func (e *ExistsCache) Put(node manifests.NodeIdentity, restore digest.ForRestore, lockedUntil unixtime.Seconds) {
 	c := e.getCache(node)
 	key, err := restore.MarshalBinary()
 	if err != nil {
 		panic(err)
 	}
-	seconds := unixtime.Seconds(lockedUntil.Unix())
-	value, err := seconds.MarshalBinary()
+	value, err := lockedUntil.MarshalBinary()
 	if err != nil {
 		panic(err)
 	}
@@ -116,7 +117,7 @@ var existsCacheLockTimeMisses = prometheus.NewCounter(prometheus.CounterOpts{
 	Namespace: "cassandrabackup",
 	Subsystem: "bucket_exists_cache",
 	Name:      "lock_time_misses_total",
-	Help:      "Number of exists cache misses due to expired/future lock time.",
+	Help:      "Number of exists cache misses due to expired/past lock time.",
 })
 
 func init() {

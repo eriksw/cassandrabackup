@@ -31,6 +31,10 @@ func Now() Seconds {
 
 type Seconds int64
 
+func (t Seconds) Add(duration time.Duration) Seconds {
+	return t + Seconds(duration.Seconds())
+}
+
 func (t Seconds) Decimal() string {
 	return fmt.Sprintf("%020d", t)
 }

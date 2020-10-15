@@ -17,59 +17,32 @@ package bucket
 import (
 	"context"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/retailnext/cassandrabackup/manifests"
 	"go.uber.org/zap"
 )
 
 func (c *Client) ListHostNames(ctx context.Context, cluster string) ([]manifests.NodeIdentity, error) {
-	lgr := zap.S()
-	prefix := c.layout.absoluteKeyPrefixForClusterHosts(cluster)
-	input := &s3.ListObjectsV2Input{
-		Bucket:    &c.bucket,
-		Delimiter: aws.String("/"),
-		Prefix:    &prefix,
+	listPrefix := c.layout.absoluteKeyPrefixForClusterHosts(cluster)
+	prefixes, err := c.storageClient.ListPrefixes(ctx, listPrefix)
+	if err != nil {
+		return nil, err
 	}
-	var result []manifests.NodeIdentity
-	err := c.s3Svc.ListObjectsV2PagesWithContext(ctx, input, func(page *s3.ListObjectsV2Output, lastPage bool) bool {
-		nodes, bonus := c.layout.decodeClusterHosts(page.CommonPrefixes)
-		if len(bonus) > 0 {
-			lgr.Warnw("unexpected_objects_in_bucket", "keys", bonus)
-		}
-		result = append(result, nodes...)
-		if len(page.Contents) > 0 {
-			unexpected := make([]string, 0, len(page.Contents))
-			for _, o := range page.Contents {
-				unexpected = append(unexpected, *o.Key)
-			}
-			lgr.Warnw("unexpected_objects_in_bucket", "keys", unexpected)
-		}
-		return true
-	})
-	return result, err
+	nodes, bonus := c.layout.decodeClusterHosts(prefixes)
+	if len(bonus) > 0 {
+		zap.S().Warnw("unexpected_prefixes_in_bucket_listing_hosts", "cluster", cluster, "keys", bonus)
+	}
+	return nodes, nil
 }
 
 func (c *Client) ListClusters(ctx context.Context) ([]string, error) {
-	lgr := zap.S()
-	prefix := c.layout.absoluteKeyPrefixForClusters()
-	input := &s3.ListObjectsV2Input{
-		Bucket:    &c.bucket,
-		Delimiter: aws.String("/"),
-		Prefix:    &prefix,
+	listPrefix := c.layout.absoluteKeyPrefixForClusters()
+	prefixes, err := c.storageClient.ListPrefixes(ctx, listPrefix)
+	if err != nil {
+		return nil, err
 	}
-	var result []string
-	err := c.s3Svc.ListObjectsV2PagesWithContext(ctx, input, func(page *s3.ListObjectsV2Output, lastPage bool) bool {
-		for _, obj := range page.CommonPrefixes {
-			cluster, err := c.layout.decodeCluster(*obj.Prefix)
-			if err != nil {
-				lgr.Errorw("decode_cluster_error", "err", err)
-			} else {
-				result = append(result, cluster)
-			}
-		}
-		// Continue to the next page
-		return page.NextContinuationToken != nil
-	})
-	return result, err
+	clusters, bonus := c.layout.decodeClusters(prefixes)
+	if len(bonus) > 0 {
+		zap.S().Warnw("unexpected_prefixes_in_bucket_listing_clusters", "keys", bonus)
+	}
+	return clusters, nil
 }

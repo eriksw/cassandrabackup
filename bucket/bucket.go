@@ -15,17 +15,11 @@
 package bucket
 
 import (
-	"strings"
+	"context"
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/aws/aws-sdk-go/service/s3/s3iface"
-	"github.com/aws/aws-sdk-go/service/s3/s3manager"
-	"github.com/aws/aws-sdk-go/service/s3/s3manager/s3manageriface"
-	"github.com/retailnext/cassandrabackup/bucket/safeuploader"
+	"github.com/retailnext/cassandrabackup/bucket/googlestorage"
 	"github.com/retailnext/cassandrabackup/cache"
 	"go.uber.org/zap"
 	"gopkg.in/alecthomas/kingpin.v2"
@@ -40,22 +34,19 @@ const (
 )
 
 type Client struct {
-	s3Svc       s3iface.S3API
-	uploader    *safeuploader.SafeUploader
-	downloader  s3manageriface.DownloaderAPI
-	existsCache *ExistsCache
-
-	layout               Layout
-	bucket               string
-	serverSideEncryption *string
+	existsCache   ExistsCache
+	storageClient StorageClient
+	layout        Layout
 }
 
-var (
-	bucketName             = kingpin.Flag("s3-bucket", "S3 bucket name.").Required().String()
-	bucketRegion           = kingpin.Flag("s3-region", "S3 bucket region.").Envar("AWS_REGION").Required().String()
-	bucketKeyPrefix        = kingpin.Flag("s3-key-prefix", "Set the prefix for files in the S3 bucket").Default("/").String()
-	bucketBlobStorageClass = kingpin.Flag("s3-storage-class", "Set the storage class for files in S3").Default(s3.StorageClassStandardIa).String()
-)
+/*
+	s3BucketName             = kingpin.Flag("s3-bucket", "S3 bucket name.").String()
+	s3BucketRegion           = kingpin.Flag("s3-region", "S3 bucket region.").Envar("AWS_REGION").String()
+	s3BucketKeyPrefix        = kingpin.Flag("s3-key-prefix", "Set the prefix for files in the S3 bucket").Default("/").String()
+	s3BucketBlobStorageClass = kingpin.Flag("s3-storage-class", "Set the storage class for files in S3").Default(s3.StorageClassStandardIa).String()
+*/
+
+var gcsBucketName = kingpin.Flag("gcs-bucket", "GCS bucket name.").String()
 
 var (
 	Shared *Client
@@ -64,15 +55,42 @@ var (
 
 func OpenShared() *Client {
 	once.Do(func() {
-		Shared = newClient()
+		Shared = newGoogleClient()
 	})
 	return Shared
 }
 
+func newGoogleClient() *Client {
+	cache.OpenShared()
+
+	ctx := context.TODO()
+
+	cl := Client{
+		layout: Layout{
+			Prefix:                   "",
+			UseDeprecatedCommonFiles: false,
+		},
+		existsCache: ExistsCache{
+			Storage:                  cache.Shared,
+			UseDeprecatedCommonFiles: true,
+		},
+	}
+
+	if sc, err := googlestorage.NewClient(ctx, *gcsBucketName); err == nil {
+		cl.storageClient = sc
+	} else {
+		zap.S().Fatalw("storage_client_error", "err", err)
+	}
+
+	return &cl
+}
+
+/*
+
 func newClient() *Client {
 	cache.OpenShared()
 
-	awsConf := aws.NewConfig().WithRegion(*bucketRegion)
+	awsConf := aws.NewConfig().WithRegion(*s3BucketRegion)
 	awsSession, err := session.NewSession(awsConf)
 	if err != nil {
 		zap.S().Fatalw("aws_new_session_error", "err", err)
@@ -83,9 +101,9 @@ func newClient() *Client {
 		s3Svc: s3Svc,
 		uploader: &safeuploader.SafeUploader{
 			S3:                   s3Svc,
-			Bucket:               *bucketName,
+			Bucket:               *s3BucketName,
 			ServerSideEncryption: aws.String(s3.ServerSideEncryptionAes256),
-			StorageClass:         bucketBlobStorageClass,
+			StorageClass:         s3BucketBlobStorageClass,
 		},
 		downloader: s3manager.NewDownloaderWithClient(s3Svc, func(d *s3manager.Downloader) {
 			d.PartSize = 64 * 1024 * 1024 // 64MB per part
@@ -95,10 +113,10 @@ func newClient() *Client {
 			UseDeprecatedCommonFiles: true,
 		},
 		layout: Layout{
-			Prefix:                   strings.Trim(*bucketKeyPrefix, "/"),
+			Prefix:                   strings.Trim(*s3BucketKeyPrefix, "/"),
 			UseDeprecatedCommonFiles: true,
 		},
-		bucket:               *bucketName,
+		bucket:               *s3BucketName,
 		serverSideEncryption: aws.String(s3.ServerSideEncryptionAes256),
 	}
 	c.validateEncryptionConfiguration()
@@ -122,3 +140,4 @@ func (c *Client) validateEncryptionConfiguration() {
 	}
 	zap.S().Fatalw("bucket_not_configured_with_sse_algorithm", "bucket", c.bucket)
 }
+*/

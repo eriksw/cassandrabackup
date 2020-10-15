@@ -17,6 +17,7 @@ package unixtime
 import (
 	"fmt"
 	"testing"
+	"time"
 )
 
 type testCase struct {
@@ -105,4 +106,13 @@ func TestSeconds(t *testing.T) {
 			t.Errorf("case %d: %s", i, msg)
 		}
 	}
+
+	t.Run("add", func(t *testing.T) {
+		v0 := Seconds(0)
+		v1 := Seconds(1)
+
+		if v0.Add(1*time.Second) != v1 {
+			t.Fatal(v1)
+		}
+	})
 }

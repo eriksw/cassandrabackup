@@ -40,7 +40,17 @@ func RestoreCluster(ctx context.Context) error {
 	for _, hostIdentity := range identities {
 		hostLgr := lgr.With("identity", hostIdentity)
 
-		nodePlan, err := plan.Create(ctx, hostIdentity, unixtime.Seconds(*clusterCmdNotBefore), unixtime.Seconds(*clusterCmdNotAfter))
+		// TODO expose more options
+		options := plan.Options{
+			StartAfter:        unixtime.Seconds(*clusterCmdNotBefore),
+			NotAfter:          unixtime.Seconds(*clusterCmdNotAfter),
+			Maximize:          false,
+			IgnoreIncomplete:  false,
+			IgnoreIncremental: false,
+			IgnoreSnapshots:   false,
+		}
+
+		nodePlan, err := plan.Create(ctx, hostIdentity, options)
 		if err != nil {
 			return err
 		}

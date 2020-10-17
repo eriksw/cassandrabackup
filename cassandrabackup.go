@@ -185,6 +185,14 @@ func main() {
 		if err != nil {
 			lgr.Fatalw("restore_error", "err", err)
 		}
+	case "restore special":
+		err := restore.RestoreSpecial(ctx)
+		if err == context.Canceled {
+			return
+		}
+		if err != nil {
+			lgr.Fatalw("restore_error", "err", err)
+		}
 	case "list manifests":
 		lgr := zap.S()
 		identity := manifests.NodeIdentity{

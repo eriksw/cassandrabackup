@@ -29,7 +29,7 @@ func (c *Client) ListHostNames(ctx context.Context, cluster string) ([]manifests
 	}
 	nodes, bonus := c.layout.decodeClusterHosts(prefixes)
 	if len(bonus) > 0 {
-		zap.S().Warnw("unexpected_prefixes_in_bucket_listing_hosts", "cluster", cluster, "keys", bonus)
+		zap.S().Warnw("unexpected_prefixes_in_bucket_listing_hosts", "cluster", cluster, "hosts", nodes, "bonus", bonus)
 	}
 	return nodes, nil
 }
@@ -42,7 +42,7 @@ func (c *Client) ListClusters(ctx context.Context) ([]string, error) {
 	}
 	clusters, bonus := c.layout.decodeClusters(prefixes)
 	if len(bonus) > 0 {
-		zap.S().Warnw("unexpected_prefixes_in_bucket_listing_clusters", "keys", bonus)
+		zap.S().Warnw("unexpected_prefixes_in_bucket_listing_clusters", "clusters", clusters, "bonus", bonus)
 	}
 	return clusters, nil
 }

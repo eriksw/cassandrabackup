@@ -42,8 +42,7 @@ func (c *Client) PutFile(ctx context.Context, key string, file paranoid.File, di
 	defer cancelPutCtx()
 
 	targetWriter := obj.NewWriter(putCtx)
-	// TODO POPULATE ME
-	targetWriter.ObjectAttrs.MD5 = nil
+	targetWriter.ObjectAttrs.MD5 = digests.MD5()
 	targetWriter.EventBasedHold = true
 
 	copied, copyErr := io.Copy(targetWriter, sourceFile)

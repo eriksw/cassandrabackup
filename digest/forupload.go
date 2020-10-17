@@ -19,6 +19,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"math"
 
 	"github.com/retailnext/cassandrabackup/digest/parts"
 	"github.com/retailnext/cassandrabackup/paranoid"
@@ -30,11 +31,11 @@ type ForUpload struct {
 	partDigests parts.PartDigests
 }
 
-func (u *ForUpload) URLSafe() string {
+func (u ForUpload) URLSafe() string {
 	return base64.RawURLEncoding.EncodeToString(u.blake2b[:])
 }
 
-func (u *ForUpload) Parts() int64 {
+func (u ForUpload) Parts() int64 {
 	return u.partDigests.Parts()
 }
 
@@ -58,7 +59,11 @@ func (u ForUpload) PartContentSHA256(partNumber int64) string {
 	return u.partDigests.PartContentSHA256(partNumber)
 }
 
-func (u *ForUpload) ForRestore() ForRestore {
+func (u ForUpload) MD5() []byte {
+	return u.partDigests.MD5()
+}
+
+func (u ForUpload) ForRestore() ForRestore {
 	return ForRestore{
 		blake2b: u.blake2b,
 	}
@@ -78,7 +83,8 @@ func (u *ForUpload) populate(ctx context.Context, file paranoid.File) error {
 	}()
 
 	var partDigestsMaker parts.PartDigestsMaker
-	partDigestsMaker.Reset(1024 * 1024 * 64)
+	partDigestsMaker.Reset(math.MaxUint64)
+	// partDigestsMaker.Reset(1024 * 1024 * 64)
 
 	blake2b512Hash, err := blake2b.New512(nil)
 	if err != nil {
@@ -134,7 +140,7 @@ func (u *ForUpload) populate(ctx context.Context, file paranoid.File) error {
 	return nil
 }
 
-func (u *ForUpload) MarshalBinary() ([]byte, error) {
+func (u ForUpload) MarshalBinary() ([]byte, error) {
 	partDigests, err := u.partDigests.MarshalBinary()
 	if err != nil {
 		return nil, err

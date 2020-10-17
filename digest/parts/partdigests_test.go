@@ -18,6 +18,7 @@ import (
 	"crypto/md5"
 	"crypto/sha256"
 	"fmt"
+	"math"
 	"testing"
 )
 
@@ -238,6 +239,19 @@ var partsDigestTestCases = []partsDigestTestCase{
 		sha256Parts: []sha256Digest{
 			sha256Of(make([]byte, 1024)),
 			sha256Of(make([]byte, 512)),
+		},
+	},
+	{
+		partSize: math.MaxUint64,
+		writes: [][]byte{
+			make([]byte, 1023),
+			make([]byte, 513),
+		},
+		md5Parts: []md5Digest{
+			md5Of(make([]byte, 1536)),
+		},
+		sha256Parts: []sha256Digest{
+			sha256Of(make([]byte, 1536)),
 		},
 	},
 }

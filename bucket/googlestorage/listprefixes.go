@@ -48,5 +48,6 @@ func (c *Client) ListPrefixes(ctx context.Context, prefix string) ([]string, err
 	if err != nil {
 		return nil, err
 	}
+	zap.S().Debugw("list_prefixes", "prefix", prefix, "results", result)
 	return result, nil
 }

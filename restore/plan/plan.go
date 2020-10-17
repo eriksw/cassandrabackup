@@ -16,6 +16,7 @@ package plan
 
 import (
 	"context"
+	"time"
 
 	"github.com/retailnext/cassandrabackup/bucket"
 	"github.com/retailnext/cassandrabackup/digest"
@@ -35,10 +36,19 @@ type NodePlan struct {
 	SelectedManifests manifests.ManifestKeys
 }
 
-func Create(ctx context.Context, identity manifests.NodeIdentity, startAfter, notAfter unixtime.Seconds) (NodePlan, error) {
+type Options struct {
+	StartAfter        unixtime.Seconds
+	NotAfter          unixtime.Seconds
+	Maximize          bool
+	IgnoreIncomplete  bool
+	IgnoreIncremental bool
+	IgnoreSnapshots   bool
+}
+
+func Create(ctx context.Context, identity manifests.NodeIdentity, options Options) (NodePlan, error) {
 	lgr := zap.S().With("identity", identity)
 
-	nodeManifests, err := getManifests(ctx, identity, startAfter, notAfter)
+	nodeManifests, err := getManifests(ctx, identity, options)
 	if err != nil {
 		lgr.Errorw("get_manifests_error", "err", err)
 		return NodePlan{}, err
@@ -47,29 +57,58 @@ func Create(ctx context.Context, identity manifests.NodeIdentity, startAfter, no
 	return assemble(nodeManifests), nil
 }
 
-func getManifests(ctx context.Context, identity manifests.NodeIdentity, startAfter, notAfter unixtime.Seconds) ([]manifests.Manifest, error) {
+func getManifests(ctx context.Context, identity manifests.NodeIdentity, options Options) ([]manifests.Manifest, error) {
 	client := bucket.OpenShared()
 
-	keys, err := client.ListManifests(ctx, identity, startAfter, notAfter)
+	startAfter := options.StartAfter
+	if startAfter == 0 {
+		startAfter = unixtime.Now().Add(-48 * time.Hour)
+	}
+
+	keys, err := client.ListManifests(ctx, identity, startAfter, options.NotAfter)
 	if err != nil {
 		return nil, err
 	}
 
-	snapshotIndex := -1
-	for i := len(keys) - 1; i >= 0; i-- {
-		if keys[i].ManifestType == manifests.ManifestTypeSnapshot {
-			snapshotIndex = i
-			break
+	if !options.Maximize {
+		snapshotIndex := -1
+		for i := len(keys) - 1; i >= 0; i-- {
+			if keys[i].ManifestType == manifests.ManifestTypeSnapshot {
+				snapshotIndex = i
+				break
+			}
+		}
+		if snapshotIndex >= 0 {
+			keys = keys[snapshotIndex:]
 		}
 	}
-	if snapshotIndex >= 0 {
-		keys = keys[snapshotIndex:]
+
+	filteredKeys := keys[:0]
+	for _, key := range keys {
+		switch key.ManifestType {
+		case manifests.ManifestTypeInvalid:
+			continue
+		case manifests.ManifestTypeSnapshot:
+			if options.IgnoreSnapshots {
+				continue
+			}
+		case manifests.ManifestTypeIncomplete:
+			if options.IgnoreIncomplete {
+				continue
+			}
+		case manifests.ManifestTypeIncremental:
+			if options.IgnoreIncremental {
+				continue
+			}
+		}
+		filteredKeys = append(filteredKeys, key)
 	}
 
-	if len(keys) == 0 {
+	if len(filteredKeys) == 0 {
 		return nil, nil
 	}
-	return client.GetManifests(ctx, identity, keys)
+
+	return client.GetManifests(ctx, identity, filteredKeys)
 }
 
 func assemble(nodeManifests []manifests.Manifest) NodePlan {

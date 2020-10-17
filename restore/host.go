@@ -35,7 +35,17 @@ func RestoreHost(ctx context.Context) error {
 	identity := nodeidentity.ForRestore(ctx, hostCmdCluster, hostCmdHostname, hostCmdHostnamePattern)
 	lgr := zap.S().With("identity", identity)
 
-	nodePlan, err := plan.Create(ctx, identity, unixtime.Seconds(*hostCmdNotBefore), unixtime.Seconds(*hostCmdNotAfter))
+	// TODO expose other options
+	options := plan.Options{
+		StartAfter:        unixtime.Seconds(*hostCmdNotBefore),
+		NotAfter:          unixtime.Seconds(*hostCmdNotAfter),
+		Maximize:          false,
+		IgnoreIncomplete:  false,
+		IgnoreIncremental: false,
+		IgnoreSnapshots:   false,
+	}
+
+	nodePlan, err := plan.Create(ctx, identity, options)
 	if err != nil {
 		return err
 	}

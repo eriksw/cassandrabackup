@@ -95,7 +95,7 @@ func (r *ForRestore) UnmarshalText(text []byte) error {
 	return r.blake2b.UnmarshalText(text)
 }
 
-func (r *ForRestore) MarshalEasyJSON(w *jwriter.Writer) {
+func (r ForRestore) MarshalEasyJSON(w *jwriter.Writer) {
 	r.blake2b.MarshalEasyJSON(w)
 }
 
@@ -103,7 +103,7 @@ func (r *ForRestore) UnmarshalEasyJSON(l *jlexer.Lexer) {
 	r.blake2b.UnmarshalEasyJSON(l)
 }
 
-func (r *ForRestore) MarshalBinary() ([]byte, error) {
+func (r ForRestore) MarshalBinary() ([]byte, error) {
 	return r.blake2b.MarshalBinary()
 }
 

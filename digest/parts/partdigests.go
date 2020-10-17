@@ -1,4 +1,4 @@
-// Copyright 2019 RetailNext, Inc.
+// Copyright 2020 RetailNext, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"math"
 )
 
 type PartDigests struct {
@@ -27,11 +28,14 @@ type PartDigests struct {
 	totalLength uint64
 }
 
-func (pd *PartDigests) TotalLength() uint64 {
+func (pd PartDigests) TotalLength() uint64 {
 	return pd.totalLength
 }
 
-func (pd *PartDigests) Parts() int64 {
+func (pd PartDigests) Parts() int64 {
+	if pd.partSize > math.MaxInt64 {
+		return 1
+	}
 	numParts := int64(pd.totalLength) / int64(pd.partSize)
 	if pd.totalLength%pd.partSize > 0 || pd.totalLength == 0 {
 		numParts += 1
@@ -39,14 +43,22 @@ func (pd *PartDigests) Parts() int64 {
 	return numParts
 }
 
-func (pd *PartDigests) PartOffset(partNumber int64) int64 {
+func (pd PartDigests) MD5() []byte {
+	if len(pd.md5Parts) != 1 {
+		return nil
+	}
+	v := pd.md5Parts[0]
+	return v[:]
+}
+
+func (pd PartDigests) PartOffset(partNumber int64) int64 {
 	if partNumber < 0 || partNumber > int64(len(pd.md5Parts)) {
 		panic("PartOffset: invalid partNumber")
 	}
 	return int64(pd.partSize) * (partNumber - 1)
 }
 
-func (pd *PartDigests) PartLength(partNumber int64) int64 {
+func (pd PartDigests) PartLength(partNumber int64) int64 {
 	if partNumber < 1 || partNumber > pd.Parts() {
 		panic("PartLength: invalid partNumber")
 	}
@@ -56,7 +68,7 @@ func (pd *PartDigests) PartLength(partNumber int64) int64 {
 	return int64(pd.partSize)
 }
 
-func (pd *PartDigests) PartContentMD5(partNumber int64) string {
+func (pd PartDigests) PartContentMD5(partNumber int64) string {
 	if partNumber < 1 || partNumber > pd.Parts() {
 		panic("PartContentMD5: invalid partNumber")
 	}
@@ -64,7 +76,7 @@ func (pd *PartDigests) PartContentMD5(partNumber int64) string {
 	return pd.md5Parts[i].String()
 }
 
-func (pd *PartDigests) PartContentSHA256(partNumber int64) string {
+func (pd PartDigests) PartContentSHA256(partNumber int64) string {
 	if partNumber < 1 || partNumber > pd.Parts() {
 		panic("PartContentSHA256: invalid partNumber")
 	}
@@ -72,11 +84,13 @@ func (pd *PartDigests) PartContentSHA256(partNumber int64) string {
 	return pd.sha256Parts[i].String()
 }
 
-const headerLength = 16
-const partSizeOffset = 0
-const totalLengthOffset = 8
+const (
+	headerLength      = 16
+	partSizeOffset    = 0
+	totalLengthOffset = 8
+)
 
-func (pd *PartDigests) MarshalBinary() (data []byte, err error) {
+func (pd PartDigests) MarshalBinary() (data []byte, err error) {
 	output := make([]byte, headerLength+pd.md5Parts.size()+pd.sha256Parts.size())
 	binary.BigEndian.PutUint64(output[partSizeOffset:], pd.partSize)
 	binary.BigEndian.PutUint64(output[totalLengthOffset:], pd.totalLength)
@@ -101,7 +115,7 @@ func (pd *PartDigests) UnmarshalBinary(data []byte) error {
 	return nil
 }
 
-func (pd *PartDigests) MarshalText() ([]byte, error) {
+func (pd PartDigests) MarshalText() ([]byte, error) {
 	binaryEncoded, err := pd.MarshalBinary()
 	if err != nil {
 		return nil, err

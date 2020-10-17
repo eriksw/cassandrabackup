@@ -120,7 +120,7 @@ func (l Layout) decodeClusterHosts(prefixes []string) ([]manifests.NodeIdentity,
 	clustersPrefix := l.absoluteKeyPrefixForClusters()
 	skip := len(clustersPrefix)
 	for _, raw := range prefixes {
-		if !strings.HasPrefix(clustersPrefix, raw) {
+		if !strings.HasPrefix(raw, clustersPrefix) {
 			bonus = append(bonus, raw)
 			continue
 		}

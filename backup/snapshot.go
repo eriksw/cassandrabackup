@@ -17,6 +17,7 @@ package backup
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/retailnext/cassandrabackup/bucket"
 	"github.com/retailnext/cassandrabackup/digest"
@@ -31,7 +32,7 @@ func DoSnapshotBackup(ctx context.Context) error {
 		return err
 	}
 
-	snapshotName := fmt.Sprintf("auto-%s", manifest.Time.Decimal())
+	snapshotName := fmt.Sprintf("auto-%d-%s", os.Getpid(), manifest.Time.Decimal())
 	err = nodetool.TakeSnapshot(snapshotName)
 	if err != nil {
 		return err

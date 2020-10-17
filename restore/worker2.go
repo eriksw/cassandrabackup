@@ -18,9 +18,14 @@ import (
 	"context"
 	"encoding/base64"
 	"os"
+	"os/user"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"sync"
 	"time"
+
+	"github.com/retailnext/cassandrabackup/checkpoint"
 
 	"go.uber.org/multierr"
 
@@ -34,6 +39,138 @@ import (
 	"github.com/retailnext/cassandrabackup/digest"
 	"github.com/retailnext/writefile"
 )
+
+type WorkerOptions struct {
+	TargetDirectory       string
+	StagingDirectory      string
+	GraveyardDirectory    string
+	EnsureOwnership       bool
+	ConcurrentDownload    int
+	ConcurrentVerify      int
+	NoDownloadToStaging   bool
+	NoLinkToTarget        bool
+	RemoveInvalidAtTarget bool
+}
+
+func makeWritefileConfig(dir string) writefile.Config {
+	c := writefile.Config{
+		Directory:                dir,
+		DirectoryMode:            0755,
+		EnsureDirectoryOwnership: true,
+		FileMode:                 0644,
+		EnsureFileOwnership:      true,
+	}
+
+	lgr := zap.S()
+	userName := "cassandra"
+	osUser, err := user.Lookup(userName)
+	if err != nil {
+		lgr.Panicw("user_lookup_error", "user", userName, "err", err)
+	}
+
+	uid, err := strconv.Atoi(osUser.Uid)
+	if err != nil {
+		lgr.Panicw("user_id_lookup_error", "uid", osUser.Uid, "err", err)
+	}
+	c.DirectoryUID = uid
+	c.FileUID = uid
+
+	gid, err := strconv.Atoi(osUser.Gid)
+	if err != nil {
+		lgr.Panicw("group_id_lookup_error", "gid", osUser.Gid, "err", err)
+	}
+	c.DirectoryGID = gid
+	c.FileGID = gid
+	return c
+}
+
+type DownloadableFile struct {
+	Digest digest.ForRestore
+	Nodes  manifests.NodeIdentities
+}
+
+type WorkerPlan map[string]DownloadableFile
+
+func Restore(ctx context.Context, wp WorkerPlan, options WorkerOptions) error {
+	tasks := make(map[digest.ForRestore]downloadTask)
+	for name, df := range wp {
+		task := tasks[df.Digest]
+		task.digest = df.Digest
+		task.nodes = append(task.nodes, df.Nodes...)
+		sort.Sort(task.nodes)
+		filteredNodes := task.nodes[:0]
+		for i := range task.nodes {
+			if i == 0 || task.nodes[i] != filteredNodes[len(filteredNodes)-1] {
+				filteredNodes = append(filteredNodes, task.nodes[i])
+			}
+		}
+		task.nodes = filteredNodes
+		task.paths = append(task.paths, name)
+		tasks[df.Digest] = task
+	}
+
+	w2 := worker2{
+		staging:               makeWritefileConfig(options.StagingDirectory),
+		target:                makeWritefileConfig(options.TargetDirectory),
+		graveyard:             makeWritefileConfig(options.GraveyardDirectory),
+		ctx:                   ctx,
+		digestCache:           digest.OpenShared(),
+		bucketClient:          bucket.OpenShared(),
+		downloadLimiter:       make(chan struct{}, options.ConcurrentDownload),
+		verifyLimiter:         make(chan struct{}, options.ConcurrentVerify),
+		noDownloadToStaging:   options.NoDownloadToStaging,
+		noLinkToTarget:        options.NoLinkToTarget,
+		removeInvalidAtTarget: options.RemoveInvalidAtTarget,
+	}
+
+	w2.wg.Add(len(tasks))
+	w2.linkReady.Add(len(tasks))
+	for forRestore, task := range tasks {
+		go w2.processFile(task.paths, forRestore, task.nodes)
+	}
+
+	w2.wg.Wait()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	w2.fileStatusLock.Lock()
+	defer w2.fileStatusLock.Unlock()
+
+	result := make(FileErrors)
+
+	var inPlace, readyInStaging, errored, other int
+
+	for name, status := range w2.fileStatus {
+		if status.InPlace {
+			inPlace++
+			continue
+		} else if status.InStaging {
+			readyInStaging++
+		} else if status.Error != nil {
+			errored++
+			result[name] = status.Error
+		} else {
+			other++
+		}
+	}
+	zap.S().Infow("restore_done", "in_place", inPlace, "ready_in_staging", readyInStaging, "errored", errored, "other", other)
+
+	if len(result) == 0 {
+		return nil
+	}
+
+	return result
+}
+
+type downloadTask struct {
+	paths  []string
+	digest digest.ForRestore
+	nodes  manifests.NodeIdentities
+}
 
 type worker2 struct {
 	staging   writefile.Config
@@ -50,8 +187,7 @@ type worker2 struct {
 
 	wg sync.WaitGroup
 
-	linkReadyWait sync.WaitGroup
-	linkReady     chan struct{}
+	linkReady checkpoint.Barrier
 
 	fileStatus     map[string]FileStatus
 	fileStatusLock sync.Mutex
@@ -91,8 +227,7 @@ func (sbn statusByName) isDone() bool {
 }
 
 func (w *worker2) processFile(names []string, forRestore digest.ForRestore, nodes []manifests.NodeIdentity) {
-	lgr := zap.S().With("digest", forRestore)
-
+	lgr := zap.S().With("digest", forRestore, "paths", names)
 	statusUpdates := make(statusByName, len(names))
 	for _, name := range names {
 		statusUpdates[name] = FileStatus{}
@@ -108,6 +243,7 @@ func (w *worker2) processFile(names []string, forRestore digest.ForRestore, node
 	var inStaging bool
 	select {
 	case <-doneCh:
+		w.linkReady.Abort()
 		return
 	case w.verifyLimiter <- struct{}{}:
 		inStaging = w.checkStaging(forRestore)
@@ -123,6 +259,7 @@ func (w *worker2) processFile(names []string, forRestore digest.ForRestore, node
 	for _, name := range names {
 		select {
 		case <-doneCh:
+			w.linkReady.Abort()
 			return
 		case w.verifyLimiter <- struct{}{}:
 			targetOk, bogonPresent, err := w.checkExisting(name, forRestore)
@@ -130,48 +267,111 @@ func (w *worker2) processFile(names []string, forRestore digest.ForRestore, node
 			status.InPlace = targetOk
 			status.InvalidInPlace = bogonPresent
 			status.Error = multierr.Append(status.Error, err)
+			statusUpdates[name] = status
 		}
 	}
 
 	if statusUpdates.isDone() {
-		w.linkReadyWait.Done()
-		lgr.Infow("nothing_to_do", "paths", names)
+		// lgr.Infow("nothing_to_do", "paths", names)
+		w.linkReady.Done()
 		return
 	}
 
 	if !inStaging {
 		if w.noDownloadToStaging {
 			lgr.Infow("would_download", "source_nodes", nodes)
+			w.linkReady.Abort()
 			return
 		}
 
 		select {
 		case <-doneCh:
 			return
-		case w.downloadLimiter <- struct{}{}:
-			ok, err := w.downloadToStagingFromAny(forRestore, nodes)
-			for _, name := range names {
-				status := statusUpdates[name]
-				status.Error = multierr.Append(status.Error, err)
-				status.InStaging = ok
-				statusUpdates[name] = status
-			}
-			inStaging = ok
+		default:
 		}
+
+		ok, err := w.downloadToStagingFromAny(forRestore, nodes)
+		for _, name := range names {
+			status := statusUpdates[name]
+			status.Error = multierr.Append(status.Error, err)
+			status.InStaging = ok
+			statusUpdates[name] = status
+		}
+		inStaging = ok
+
 	}
 
 	if !inStaging {
 		lgr.Errorw("cannot_proceed", "status", statusUpdates)
+		w.linkReady.Abort()
 		return
 	}
 
-	w.linkReadyWait.Done()
+	w.linkReady.Done()
+	linkReadyAbortCh, linkReadyProceedCh := w.linkReady.Wait()
 	// Wait for LinkReady or context close.
 	select {
 	case <-doneCh:
 		return
-	case <-w.linkReady:
+	case <-linkReadyAbortCh:
+		lgr.Debugw("lr aborted")
+		return
+	case <-linkReadyProceedCh:
 	}
+	lgr.Debugw("lr ready")
+
+	var namesToLink []string
+	for _, name := range names {
+		status := statusUpdates[name]
+		if status.InPlace {
+			continue
+		}
+		namesToLink = append(namesToLink, name)
+	}
+
+	if w.noLinkToTarget {
+		lgr.Infow("would_link", "to_link", namesToLink)
+		return
+	}
+
+	for _, name := range namesToLink {
+		status := statusUpdates[name]
+		err := w.linkFromStaging(name, forRestore)
+		if err == nil {
+			status.InPlace = true
+			status.Error = nil
+		} else {
+			status.Error = multierr.Append(status.Error, err)
+		}
+		statusUpdates[name] = status
+	}
+}
+
+func (w *worker2) linkFromStaging(name string, forRestore digest.ForRestore) error {
+	lgr := zap.S().With("path", name, "digest", forRestore)
+	targetPath := filepath.Join(w.target.Directory, name)
+
+	targetPathDir := w.target
+	targetPathDir.Directory = filepath.Dir(targetPath)
+
+	err := os.Link(w.stagingPath(forRestore), targetPath)
+	if err == nil {
+		lgr.Debugw("link_ok")
+		return nil
+	}
+	lgr.Debugw("link_error", "err", err)
+	if os.IsNotExist(err) {
+		// try ensuring the target directory
+		targetPathDir := w.target
+		targetPathDir.Directory = filepath.Dir(targetPath)
+		ensureDirectoryErr := targetPathDir.EnsureDirectory()
+		if ensureDirectoryErr != nil {
+			lgr.Warnw("failed_to_ensure_directory", "err", ensureDirectoryErr)
+			return ensureDirectoryErr
+		}
+		return os.Link(w.stagingPath(forRestore), targetPath)
+	}
+	return err
 }
 
 func (w *worker2) checkStaging(forRestore digest.ForRestore) bool {
@@ -305,6 +505,7 @@ func (w *worker2) downloadToStaging(forRestore digest.ForRestore, node manifests
 			}
 		}
 		attemptErr := w.staging.WriteFile(name, func(file *os.File) error {
+			lgr.Infow("download_start", "attempt", attempt)
 			return w.bucketClient.DownloadBlobNoVerify(w.ctx, node, forRestore, file)
 		})
 		if attemptErr == nil {
@@ -314,6 +515,7 @@ func (w *worker2) downloadToStaging(forRestore digest.ForRestore, node manifests
 		lgr.Errorw("download_blob_error", "attempt", attempt, "err", attemptErr)
 		err = multierr.Append(err, attemptErr)
 	}
+	lgr.Debugw("download_complete")
 	<-w.downloadLimiter
 	alreadyReleasedDownloadLimiter = true
 

@@ -26,3 +26,20 @@ func (ni NodeIdentity) MarshalLogObject(enc zapcore.ObjectEncoder) error {
 	enc.AddString("hostname", ni.Hostname)
 	return nil
 }
+
+type NodeIdentities []NodeIdentity
+
+func (s NodeIdentities) Len() int {
+	return len(s)
+}
+
+func (s NodeIdentities) Less(i, j int) bool {
+	if s[i].Cluster != s[j].Cluster {
+		return s[i].Cluster < s[j].Cluster
+	}
+	return s[i].Hostname < s[j].Hostname
+}
+
+func (s NodeIdentities) Swap(i, j int) {
+	s[i], s[j] = s[j], s[i]
+}

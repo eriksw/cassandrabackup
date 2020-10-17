@@ -18,6 +18,9 @@ import (
 	"context"
 	"os"
 
+	"github.com/retailnext/cassandrabackup/digest"
+	"github.com/retailnext/cassandrabackup/manifests"
+
 	"github.com/retailnext/cassandrabackup/nodeidentity"
 	"github.com/retailnext/cassandrabackup/restore/plan"
 	"github.com/retailnext/cassandrabackup/restore/special"
@@ -33,9 +36,16 @@ func RestoreSpecial(ctx context.Context) error {
 		StartAfter:        unixtime.Seconds(*specialCmdNotBefore),
 		NotAfter:          unixtime.Seconds(*specialCmdNotAfter),
 		Maximize:          false,
-		IgnoreIncomplete:  false,
-		IgnoreIncremental: false,
-		IgnoreSnapshots:   false,
+		IgnoreIncomplete:  *specialCmdIgnoreIncomplete,
+		IgnoreIncremental: *specialCmdIgnoreIncremental,
+		IgnoreSnapshots:   *specialCmdIgnoreSnapshots,
+	}
+
+	if *specialCmdLinkToTarget {
+		// TODO THIS IS A DUMB SAFETY MEASURE BECAUSE I AM TIRED
+		// YOU NEED TO REMOVE THIS TO DO THIS FOR SSTABLELOADER
+		options.IgnoreIncomplete = true
+		options.IgnoreIncremental = true
 	}
 
 	nodePlan, err := plan.Create(ctx, identity, options)
@@ -46,6 +56,12 @@ func RestoreSpecial(ctx context.Context) error {
 	if len(nodePlan.SelectedManifests) == 0 {
 		return NoBackupsFound
 	}
+
+	npf := plan.Filter{
+		IncludeIndexes: true,
+	}
+	npf.Build(*specialCmdKeyspace, nil)
+	nodePlan.Filter(npf)
 
 	// if nodePlan.SelectedManifests[0].ManifestType != manifests.ManifestTypeSnapshot {
 	//	return NoSnapshotsFound
@@ -133,12 +149,36 @@ func RestoreSpecial(ctx context.Context) error {
 
 	_ = lgr.Sync()
 
-	resultToDownload := combinedPlan.ToRestoreFiles(false)
-	_ = resultToDownload
-
-	if describeErr := combinedPlan.DescribeTo(os.Stdout, true, false, false); describeErr != nil {
+	if describeErr := combinedPlan.DescribeTo(os.Stdout, true, true, true); describeErr != nil {
 		return describeErr
 	}
 
-	return nil
+	wp := toWorkerPlan(combinedPlan.ToRestoreFiles(true), identity)
+	workerOptions := WorkerOptions{
+		TargetDirectory:       *specialCmdTargetDirectory,
+		StagingDirectory:      "/var/lib/cassandra/backuprestore/staging",
+		GraveyardDirectory:    "/var/lib/cassandra/backuprestore/graveyard",
+		EnsureOwnership:       true,
+		ConcurrentDownload:    4,
+		ConcurrentVerify:      1,
+		NoDownloadToStaging:   !*specialCmdDownloadToStaging,
+		NoLinkToTarget:        !*specialCmdLinkToTarget,
+		RemoveInvalidAtTarget: false,
+	}
+	if !workerOptions.NoLinkToTarget {
+		workerOptions.NoDownloadToStaging = false
+	}
+
+	return Restore(ctx, wp, workerOptions)
+}
+
+func toWorkerPlan(in map[string]digest.ForRestore, nodes ...manifests.NodeIdentity) WorkerPlan {
+	result := make(WorkerPlan, len(in))
+	for name, forRestore := range in {
+		result[name] = DownloadableFile{
+			Digest: forRestore,
+			Nodes:  nodes,
+		}
+	}
+	return result
 }

@@ -31,7 +31,7 @@ func RestoreCluster(ctx context.Context) error {
 	filter := plan.Filter{
 		IncludeIndexes: !*clusterCmdSkipIndexes,
 	}
-	filter.Build(*clusterCmdTables)
+	filter.Build(nil, *clusterCmdTables)
 
 	identities := nodeIdentitiesForCluster(ctx, clusterCmdCluster, clusterCmdHostnamePattern)
 	lgr.Infow("selected_hosts", "identities", identities)

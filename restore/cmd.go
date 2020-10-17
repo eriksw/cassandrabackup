@@ -38,6 +38,7 @@ var (
 	specialCmdDownloadToStaging = SpecialCmd.Flag("download-to-staging", "Download files to staging.").Bool()
 	specialCmdTargetDirectory   = SpecialCmd.Flag("target", "Backups will be restored to this location.").Default("/var/lib/cassandra/data").String()
 	specialCmdLinkToTarget      = SpecialCmd.Flag("link-to-target", "Link downloaded files from staging to the target.").Bool()
+	specialCmdClusterMode       = SpecialCmd.Flag("all-nodes", "Download sstables from all nodes.").Bool()
 	specialCmdKeyspace          = SpecialCmd.Flag("keyspace", "Restore only these keyspaces.").Strings()
 	specialCmdIgnoreIncremental = SpecialCmd.Flag("ignore-incremental", "Don't restore from incremental backups.").Bool()
 	specialCmdIgnoreSnapshots   = SpecialCmd.Flag("ignore-snapshots", "Don't restore from snapshot backups.").Bool()

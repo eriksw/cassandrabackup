@@ -1,3 +1,4 @@
+project_name: cassandrabackup-gcs
 before:
   hooks:
     - go mod download

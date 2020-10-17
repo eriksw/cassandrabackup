@@ -62,6 +62,11 @@ func (c *Client) DownloadBlob(ctx context.Context, node manifests.NodeIdentity, 
 	return restore.Verify(ctx, file)
 }
 
+func (c *Client) DownloadBlobNoVerify(ctx context.Context, node manifests.NodeIdentity, restore digest.ForRestore, file *os.File) error {
+	key := c.layout.AbsoluteKeyForBlob(node, restore)
+	return c.storageClient.GetFile(ctx, file, key)
+}
+
 func (c *Client) updateExistsCache(node manifests.NodeIdentity, restore digest.ForRestore, eventHold bool, lockedUntil unixtime.Seconds) {
 	if eventHold {
 		lockedUntil = unixtime.Now().Add(c.storageClient.LockDuration())

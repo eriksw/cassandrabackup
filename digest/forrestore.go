@@ -87,6 +87,16 @@ func (r ForRestore) Verify(ctx context.Context, reader io.ReadSeeker) error {
 	return nil
 }
 
+func (r ForRestore) CompareToExpected(expected ForRestore) error {
+	if r == expected {
+		return nil
+	}
+	return MismatchError{
+		expected: expected.blake2b,
+		actual:   r.blake2b,
+	}
+}
+
 func (r ForRestore) MarshalText() ([]byte, error) {
 	return r.blake2b.MarshalText()
 }
